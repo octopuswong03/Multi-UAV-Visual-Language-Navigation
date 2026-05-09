@@ -14,6 +14,11 @@ def find_closest_node(graph, point, thresh=5, return_dist=False):
 
     for node, data in graph.nodes(data=True):
         n_pos = np.array(data['pos'])
+        if n_pos is None:
+            n_pos = np.array(data['position'])
+        if n_pos is None:
+            continue
+            
         distance = np.linalg.norm(point-n_pos)
         if distance < min_distance:
             min_distance = distance

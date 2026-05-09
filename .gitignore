@@ -41,3 +41,33 @@ output/
 memory/KG/*
 memory/mem/*
 landmark_graph.pkl
+
+# runtime outputs and per-episode dumps
+obs_imgs/
+good/
+research_output/
+line.txt
+
+# external dependencies (third-party source + weights, install per README)
+external/Grounded_Sam_Lite/groundingdino/
+external/Grounded_Sam_Lite/segment_anything/
+external/**/weights/
+external/**/checkpoints/
+
+# model weights and large binaries
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.h5
+*.pkl
+
+# misc
+.DS_Store
+*.swp
+*.bak
+*.before_restore.py
+.env
+.env.*

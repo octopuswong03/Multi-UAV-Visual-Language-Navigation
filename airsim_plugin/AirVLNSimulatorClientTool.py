@@ -123,13 +123,16 @@ class AirVLNSimulatorClientTool:
 
             ip = result[1][0]
             ports = result[1][1]
-            assert ip.decode("utf-8") == str(socket_client.address._host), '打开场景失败'
+            if isinstance(ip, (bytes, bytearray)):
+                ip = ip.decode("utf-8", errors="ignore")
+            assert str(ip) == str(socket_client.address._host), '打开场景失败'
+
             assert len(ports) == len(self.machines_info[index]['open_scenes']), '打开场景失败'
             for i, port in enumerate(ports):
                 if self.machines_info[index]['open_scenes'][i] is None:
                     self.airsim_clients[index][i] = None
                 else:
-                    self.airsim_clients[index][i] = airsim.VehicleClient(ip=ip, port=port, timeout_value=airsim_timeout)
+                    self.airsim_clients[index][i] = airsim.VehicleClient(ip=str(ip), port=port, timeout_value=airsim_timeout)
 
             logger.info(f'打开场景完毕，机器{index}: {socket_client.address._host}:{socket_client.address._port}')
             return

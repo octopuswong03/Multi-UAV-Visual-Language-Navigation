@@ -71,7 +71,7 @@ class GroundedSam:
         filt_mask = logits_filt.max(dim=1)[0] > box_threshold
         logits_filt = logits_filt[filt_mask]  # num_filt, 256
         boxes_filt = boxes_filt[filt_mask]  # num_filt, 4
-
+        scores_filt = logits_filt.max(dim=1)[0]
         # get phrase
         tokenlizer = model.tokenizer
         tokenized = tokenlizer(caption)
@@ -84,7 +84,7 @@ class GroundedSam:
             else:
                 pred_phrases.append(pred_phrase)
 
-        return boxes_filt, pred_phrases
+        return boxes_filt, pred_phrases, scores_filt
 
     def show_mask(self, mask, ax, random_color=False):
         if random_color:
@@ -112,7 +112,7 @@ class GroundedSam:
         image_pil = Image.fromarray(image)
         image_pil, _ = self.transform(image_pil, None)
 
-        pred_boxes, pred_phrases = self.get_dino_output(image_pil, text_prompt, box_threshold, text_threshold, with_logits=False)
+        pred_boxes, pred_phrases, pred_scores = self.get_dino_output(image_pil, text_prompt, box_threshold, text_threshold, with_logits=False)
         pred_boxes = pred_boxes.cpu()
 
         if len(pred_phrases) == 0:
@@ -121,7 +121,7 @@ class GroundedSam:
 
         best_phrase = "<inf>"
         best_bboxes = []
-
+        best_scores = []
         def _soft_contain(ele, ele_list):
             res = False
             for e in ele_list:
@@ -145,8 +145,18 @@ class GroundedSam:
         for i, pp in enumerate(pred_phrases):
             if best_phrase in pp:
                 best_bboxes.append(pred_boxes[i:i+1, :])
+                best_scores.append(float(pred_scores[i].item()))
 
-        boxes_filt = torch.cat(best_bboxes, dim=0)
+        # boxes_filt = torch.cat(best_bboxes, dim=0)
+
+        if isinstance(best_scores, torch.Tensor):
+            k = torch.argmax(best_scores).item()
+        else:
+            k = np.argmax(best_scores)
+        boxes_filt = best_bboxes[k]
+        sem_score = best_scores[k]
+
+
         self.sam.set_image(image)
         for i in range(boxes_filt.size(0)):
             boxes_filt[i] = boxes_filt[i] * torch.Tensor([w, h, w, h])
@@ -182,7 +192,7 @@ class GroundedSam:
         # print(masks.shape)      # [1, C, H, W]
         masks = masks.cpu()
         final_mask = torch.any(masks[0], dim=0).numpy()
-        return final_mask, seg_success        # [H, W] numpy array
+        return final_mask, seg_success, sem_score, best_phrase        # [H, W] numpy array
 
     def predict(self, image, text_prompt, box_threshold=0.3, text_threshold=0.25, visualize=False):
         '''

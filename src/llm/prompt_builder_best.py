@@ -301,224 +301,193 @@ Your output:
     return prompt
 
 
-def route_planning_prompt_builder(navigation_instruction, total_subgoals, traversed_subgoals, next_subgoal):
-    total_subgoals_str = ", ".join(total_subgoals)
-    traversed_subgoals_str = ", ".join(traversed_subgoals)
 
-    prompt = f"""
-You are a drone and your task is navigating to the described target location!
-
-Navigation instruction: {navigation_instruction}
-You need to sequentially traverse all the following subgoals to reach the target: {total_subgoals_str}
-The subgoals you have traversed are: {traversed_subgoals_str}
-Your next navigation subgoal: {next_subgoal}
-
-Your visual observation from different viewpoints are provide above.
-
-Based on the instruction, next navigation subgoal and observation, you need to plan your next waypoint. 
-There are two situations: 
-    If you find the next subgoal, you should output the viewpoint that observes the subgoal in JSON format. E.g.:
-{{
-    "is_found": true,
-    "slightly left": subgoal
-}}
-    If you don't find the next subgoal, you should select 3 objects you will probably go next from your observations in descending order of probability to find the subgoal. E.g.:
-{{
-    "is_found": false,
-    "front": "object 1",
-    "left": "object 2",
-    "slightly left": "object 3"
-}}
-    """
-
-    return prompt
-
-
-_ROUTE_VIEWPOINTS = ("left", "slightly_left", "front", "slightly_right", "right")
-
-
-def _normalize_route_viewpoint_key(key):
-    if not isinstance(key, str):
-        return None
-    k = key.strip().lower().replace("-", " ").replace("_", " ")
-    k = " ".join(k.split())
-    if "slightly" in k and "left" in k:
-        return "slightly_left"
-    if "slightly" in k and "right" in k:
-        return "slightly_right"
-    if k == "left" or (" left" in f" {k} " and "slightly" not in k):
-        return "left"
-    if k == "right" or (" right" in f" {k} " and "slightly" not in k):
-        return "right"
-    if "front" in k:
-        return "front"
+def _format_cov_trace(cov):
+    try:
+        import numpy as _np
+        c = _np.array(cov, dtype=float)
+        if c.shape == (2, 2):
+            return float(_np.trace(c))
+    except Exception:
+        pass
     return None
 
 
-def _json_like_dump(data):
-    if data is None:
-        return "null"
-    if isinstance(data, str):
-        return data
+def format_shared_memory(shared_memory, max_chars=420):
+    """Turn shared memory (dict/str/list) into a compact, model-friendly block."""
+    if shared_memory is None:
+        return ""
+    if isinstance(shared_memory, str):
+        s = shared_memory.strip()
+        return s[:max_chars]
+
+    lines = []
+
     try:
-        return json.dumps(data, ensure_ascii=False, indent=2)
+        if isinstance(shared_memory, dict) and "agent" in shared_memory:
+            a = shared_memory.get("agent") or {}
+            nm = a.get("name", "")
+            rl = a.get("role", "")
+            st = a.get("step", None)
+            hdr = []
+            if nm: hdr.append(f"agent={nm}")
+            if rl: hdr.append(f"role={rl}")
+            if st is not None: hdr.append(f"step={st}")
+            if hdr:
+                lines.append("[agent] " + ", ".join(hdr))
     except Exception:
-        return str(data)
+        pass
+
+    try:
+        if isinstance(shared_memory, dict) and "landmarks" in shared_memory:
+            lms = shared_memory.get("landmarks") or []
+            try:
+                lms = sorted(lms, key=lambda x: int(x.get("idx", 10**9)))
+            except Exception:
+                pass
+            for item in lms:
+                idx = item.get("idx", None)
+                name = item.get("name", None)
+                status = item.get("status", None)
+                mu = item.get("mu", None)
+                cov = item.get("cov_xy", None)
+                conf = item.get("conf", None)
+                evd = item.get("evidence", None)
+                age = item.get("age", None)
+                parts = []
+                if idx is not None: parts.append(f"k={idx}")
+                if name: parts.append(f"{name}")
+                if status: parts.append(f"{status}")
+                if isinstance(mu, (list, tuple)) and len(mu) >= 2:
+                    parts.append(f"mu=({mu[0]:.1f},{mu[1]:.1f})")
+                tr = _format_cov_trace(cov)
+                if tr is not None:
+                    parts.append(f"trΣ={tr:.1f}")
+                if isinstance(conf, (int, float)):
+                    parts.append(f"conf={float(conf):.2f}")
+                if isinstance(evd, (list, tuple)) and len(evd) > 0:
+                    parts.append(f"ev={len(evd)}")
+                if isinstance(age, (int, float)):
+                    parts.append(f"age={int(age)}")
+                if parts:
+                    lines.append("- " + " ".join(parts))
+    except Exception:
+        pass
+
+    try:
+        if isinstance(shared_memory, dict) and "next" in shared_memory:
+            nxt = shared_memory.get("next") or {}
+            k = nxt.get("idx", None)
+            name = nxt.get("name", None)
+            lines.append("[next hypotheses]" + (f" k={k}" if k is not None else "") + (f" {name}" if name else ""))
+            hyps = nxt.get("hypotheses") or []
+            for j, h in enumerate(hyps[:3]):
+                mu = h.get("mu", None)
+                cov = h.get("cov_xy", None)
+                conf = h.get("conf", None)
+                evd = h.get("evidence", None)
+                parts = [f"h{j}"]
+                if isinstance(mu, (list, tuple)) and len(mu) >= 2:
+                    parts.append(f"mu=({mu[0]:.1f},{mu[1]:.1f})")
+                tr = _format_cov_trace(cov)
+                if tr is not None:
+                    parts.append(f"trΣ={tr:.1f}")
+                if isinstance(conf, (int, float)):
+                    parts.append(f"conf={float(conf):.2f}")
+                if isinstance(evd, (list, tuple)) and len(evd) > 0:
+                    parts.append(f"ev={len(evd)}")
+                lines.append("  * " + " ".join(parts))
+    except Exception:
+        pass
+
+    s = "\n".join(lines).strip()
+    if not s:
+        try:
+            s = json.dumps(shared_memory, ensure_ascii=False)
+        except Exception:
+            s = str(shared_memory)
+    return s[:max_chars]
 
 
-def route_planning_multievidence_prompt_builder(
+def route_planning_prompt_builder(
         navigation_instruction,
         total_subgoals,
         traversed_subgoals,
         next_subgoal,
-        semantic_context=None,
-        spatial_context=None,
-        temporal_context=None,
-        collaborative_context=None,
+        shared_memory=None,
+        agent_name=None,
+        agent_role=None,
+        step=None,
 ):
-    total_subgoals_str = ", ".join(total_subgoals)
-    traversed_subgoals_str = ", ".join(traversed_subgoals)
+    """Build the multi-view planning prompt (role-aware + shared-memory aware)."""
+    total_subgoals_str = ", ".join(total_subgoals) if isinstance(total_subgoals, (list, tuple)) else str(total_subgoals)
+    traversed_subgoals_str = ", ".join(traversed_subgoals) if isinstance(traversed_subgoals, (list, tuple)) else str(traversed_subgoals)
 
-    semantic_block = _json_like_dump(semantic_context)
-    spatial_block = _json_like_dump(spatial_context)
-    temporal_block = _json_like_dump(temporal_context)
-    collaborative_block = _json_like_dump(collaborative_context)
+    mem_block = format_shared_memory(shared_memory, max_chars=520)
+
+    role_instructions = ""
+    if agent_role:
+        r = str(agent_role).lower()
+        if r == "verifier":
+            role_instructions = (
+                "You are a VERIFIER. Your job is to confirm/reject the NEXT subgoal with clear evidence. "
+                "Be conservative: output is_found=true ONLY if the landmark is clearly visible. "
+                "If not clearly visible, output is_found=false and propose 3 intermediate objects that move closer to the predicted location in [SHARED MEMORY]."
+            )
+        elif r == "executor":
+            role_instructions = (
+                "You are an EXECUTOR. Your job is to progress efficiently toward the NEXT subgoal, but do NOT hallucinate. "
+                "Prefer viewpoints consistent with [SHARED MEMORY]. If evidence is weak, propose objects that help you move closer to get better observation."
+            )
+        else:
+            role_instructions = (
+                "You are a SCOUT. Your job is to explore to gather NEW evidence for the team. "
+                "Avoid repeating obvious observations already summarized in [SHARED MEMORY]."
+            )
+
+    header = []
+    if agent_name: header.append(f"Agent name: {agent_name}.")
+    if agent_role: header.append(f"Agent role: {agent_role}.")
+    if step is not None: header.append(f"Decision step: {step}.")
+    header_line = " ".join(header)
 
     prompt = f"""
-You are a multimodal navigation reasoner for a drone. Keep zero-shot reasoning and do not assume any extra training.
+You are controlling ONE drone in a multi-drone team.
 
-Task:
-- Navigation instruction: {navigation_instruction}
-- Ordered landmarks: {total_subgoals_str}
-- Traversed landmarks: {traversed_subgoals_str}
-- Current next landmark: {next_subgoal}
+Navigation instruction: {navigation_instruction}
+You must sequentially traverse all subgoals: {total_subgoals_str}
+Traversed subgoals: {traversed_subgoals_str}
+Next navigation subgoal: {next_subgoal}
+{header_line}
 
-You must align FOUR evidence sources before deciding:
-1) Semantic evidence (instruction and traversed landmarks)
-2) Spatial evidence (multi-view observation, viewpoint geometry, current pose, landmark candidates)
-3) Temporal evidence (recent flight trajectory and confirmed landmark history)
-4) Multi-UAV evidence (other UAV views/hypotheses and cross-UAV hints; may be null in single-UAV mode)
+[SHARED MEMORY]
+{mem_block if mem_block else "(none)"}
 
-Structured context (JSON-like):
-[Semantic]
-{semantic_block}
+You are given 5 viewpoints above: left, slightly_left, front, slightly_right, right.
+{role_instructions}
 
-[Spatial]
-{spatial_block}
+Output STRICTLY in JSON.
 
-[Temporal]
-{temporal_block}
-
-[Multi-UAV]
-{collaborative_block}
-
-Decision policy:
-- Never rely on only one visual-language match.
-- First check whether <{next_subgoal}> is already visible.
-- If visible, set is_found=true and return the best matching viewpoint/object.
-- If not visible, set is_found=false and propose likely proxy objects by viewpoint.
-- Output a calibrated probability distribution over viewpoints for where the NEXT landmark is most likely to appear.
-- Prefer consistency between semantic, spatial, temporal, and multi-UAV evidence.
-
-Output JSON only (no markdown, no explanation):
+Case A) If you clearly see the NEXT subgoal in any viewpoint:
 {{
-  "is_found": true/false,
-  "left": "object or unknown",
-  "slightly_left": "object or unknown",
-  "front": "object or unknown",
-  "slightly_right": "object or unknown",
-  "right": "object or unknown",
-  "next_landmark_prob": {{
-    "left": float_0_to_1,
-    "slightly_left": float_0_to_1,
-    "front": float_0_to_1,
-    "slightly_right": float_0_to_1,
-    "right": float_0_to_1
-  }},
-  "evidence_alignment": {{
-    "left": {{"semantic": float_0_to_1, "spatial": float_0_to_1, "temporal": float_0_to_1, "multi_uav": float_0_to_1, "overall": float_0_to_1, "object": "..." }},
-    "slightly_left": {{"semantic": float_0_to_1, "spatial": float_0_to_1, "temporal": float_0_to_1, "multi_uav": float_0_to_1, "overall": float_0_to_1, "object": "..." }},
-    "front": {{"semantic": float_0_to_1, "spatial": float_0_to_1, "temporal": float_0_to_1, "multi_uav": float_0_to_1, "overall": float_0_to_1, "object": "..." }},
-    "slightly_right": {{"semantic": float_0_to_1, "spatial": float_0_to_1, "temporal": float_0_to_1, "multi_uav": float_0_to_1, "overall": float_0_to_1, "object": "..." }},
-    "right": {{"semantic": float_0_to_1, "spatial": float_0_to_1, "temporal": float_0_to_1, "multi_uav": float_0_to_1, "overall": float_0_to_1, "object": "..." }}
-  }}
+  "is_found": true,
+  "<one viewpoint>": "{next_subgoal}"
 }}
 
-Rules:
-- Probabilities in next_landmark_prob should sum to 1.0 (or very close due to rounding).
-- Use "unknown" for viewpoints with no clear proxy object.
-- Keep scores conservative when evidence conflicts.
+Case B) If you do NOT clearly see the NEXT subgoal:
+Pick 3 objects you will probably go next (from your observations), in descending order of usefulness:
+{{
+  "is_found": false,
+  "front": "object 1",
+  "left": "object 2",
+  "slightly left": "object 3"
+}}
+
+IMPORTANT:
+- In Case A, use exactly ONE viewpoint key. Valid keys: "front", "left", "right", "slightly left", "slightly right".
+- In Case B, use 3 different viewpoint keys among the valid keys above.
 """
     return prompt
-
-
-def parse_viewpoint_response_multievidence(resp):
-    cleaned_resp = resp.strip('`json\n').strip('`')
-    cleaned_resp = cleaned_resp.replace("True", "true").replace("False", "false")
-    data = json.loads(cleaned_resp)
-
-    is_found_raw = data.get("is_found", False)
-    if isinstance(is_found_raw, str):
-        is_found = is_found_raw.strip().lower() in ("1", "true", "yes")
-    else:
-        is_found = bool(is_found_raw)
-
-    out = {
-        "is_found": is_found,
-        "viewpoint_objects": {vp: "unknown" for vp in _ROUTE_VIEWPOINTS},
-        "viewpoint_scores": {vp: 0.0 for vp in _ROUTE_VIEWPOINTS},
-        "next_landmark_prob": {vp: 0.0 for vp in _ROUTE_VIEWPOINTS},
-        "evidence_alignment": {},
-    }
-
-    for k, v in data.items():
-        vp = _normalize_route_viewpoint_key(k)
-        if vp is None:
-            continue
-        out["viewpoint_objects"][vp] = str(v) if v is not None else "unknown"
-
-    prob_block = data.get("next_landmark_prob", {})
-    if isinstance(prob_block, dict):
-        for k, v in prob_block.items():
-            vp = _normalize_route_viewpoint_key(k)
-            if vp is None:
-                continue
-            try:
-                out["next_landmark_prob"][vp] = max(0.0, float(v))
-            except Exception:
-                pass
-
-    align_block = data.get("evidence_alignment", {})
-    if isinstance(align_block, dict):
-        for k, v in align_block.items():
-            vp = _normalize_route_viewpoint_key(k)
-            if vp is None or not isinstance(v, dict):
-                continue
-            out["evidence_alignment"][vp] = v
-            if "object" in v and isinstance(v["object"], str) and v["object"].strip():
-                out["viewpoint_objects"][vp] = v["object"].strip()
-            try:
-                out["viewpoint_scores"][vp] = max(0.0, float(v.get("overall", 0.0)))
-            except Exception:
-                pass
-
-    for vp in _ROUTE_VIEWPOINTS:
-        if out["viewpoint_scores"][vp] <= 0:
-            out["viewpoint_scores"][vp] = out["next_landmark_prob"][vp]
-
-    prob_sum = float(sum(out["next_landmark_prob"].values()))
-    if prob_sum > 1e-6:
-        for vp in _ROUTE_VIEWPOINTS:
-            out["next_landmark_prob"][vp] = float(out["next_landmark_prob"][vp] / prob_sum)
-    else:
-        score_sum = float(sum(out["viewpoint_scores"].values()))
-        if score_sum > 1e-6:
-            for vp in _ROUTE_VIEWPOINTS:
-                out["next_landmark_prob"][vp] = float(out["viewpoint_scores"][vp] / score_sum)
-
-    return out
-
-
 
 def prompt_updator_v2(original_prompt, ongoing_task=None, action_code=None, observations=None, action_seq_num=1):
     ori_prompt_splits = original_prompt.split("\n\n")

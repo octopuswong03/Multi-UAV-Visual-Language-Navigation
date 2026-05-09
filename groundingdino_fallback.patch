@@ -1,0 +1,31 @@
+--- a/external/Grounded_Sam_Lite/groundingdino/models/GroundingDINO/ms_deform_attn.py
++++ b/external/Grounded_Sam_Lite/groundingdino/models/GroundingDINO/ms_deform_attn.py
+@@ -16,6 +16,7 @@
+ 
+ import math
+ import warnings
++import os
+ from typing import Optional
+ 
+ import torch
+@@ -29,8 +30,9 @@
+     from groundingdino import _C
+ except:
+     warnings.warn("Failed to load custom C++ ops. Running on CPU mode Only!")
+-
+-
++    _C = None
++
++FORCE_PYTORCH = os.getenv("GROUNDINGDINO_FORCE_PYTORCH", "0") == "1"
+ # helpers
+ def _is_power_of_2(n):
+     if (not isinstance(n, int)) or (n < 0):
+@@ -327,7 +329,7 @@
+                 )
+             )
+     
+-        if torch.cuda.is_available() and value.is_cuda:
++        if (_C is not None) and (not FORCE_PYTORCH) and torch.cuda.is_available() and value.is_cuda:
+             halffloat = False
+             if value.dtype == torch.float16:
+                 halffloat = True

@@ -6,6 +6,10 @@ import pickle
 import numpy as np
 import cv2
 import os
+import sys
+sys.path.append(os.path.abspath("external/Grounded_Sam_Lite"))
+from torch import amp
+
 
 from PIL import Image
 from tqdm import tqdm
@@ -33,6 +37,8 @@ from scipy.spatial.transform import Rotation as R
 from evaluator.nav_evaluator import CityNavEvaluator
 
 from airsim_plugin.AirVLNSimulatorClientTool import AirVLNSimulatorClientTool
+
+from torchvision.ops import box_convert
 
 
 def convert_airsim_pose(pose):
@@ -267,7 +273,8 @@ def explore_pipeline_by_sam(
         dep_img = viewpoint_dep_imgs[vp].squeeze()
         pose = viewpoint_poses[vp]
 
-        route_mask, seg_succ = vlm.greedy_mask_predict(rgb_img, obj, visualize=False)
+        # route_mask, seg_succ = vlm.greedy_mask_predict(rgb_img, obj, visualize=False)
+        route_mask, seg_succ, *_ = vlm.greedy_mask_predict(rgb_img, obj, visualize=False)
         seg_succ_all = seg_succ_all or seg_succ
 
         if seg_succ:
@@ -276,7 +283,7 @@ def explore_pipeline_by_sam(
             semantic_part_pc = part_pc[filter_idx]
             if len(semantic_part_pc) > 30:
                 semantic_part_pc, _ = statistical_filter(semantic_part_pc)
-            if len(semantic_part_pc > 0):
+            if len(semantic_part_pc)> 0:
                 semantic_pc.append(semantic_part_pc)
 
     if len(semantic_pc) > 0:
@@ -301,8 +308,8 @@ def explore_pipeline_by_sam(
             route_coords = cur_pos
 
         dir_vec_2d = route_coords[:2] - cur_pos[:2]
-        if route_coords[2] > -5:
-            route_coords[2] = 5
+        if route_coords[2] > -2:
+            route_coords[2] = -2
 
     time1 = time.time()
     # low level path
@@ -320,8 +327,9 @@ def explore_pipeline_by_sam(
 
     return int(step_size), new_pose, next_subgoal_found
 
+def CityNavAgent(scene_id, split, data_dir="./data", max_step_size=200, vlm_name="dino", record=False,
+                 only_episode_ids=None):
 
-def CityNavAgent(scene_id, split, data_dir="./data", max_step_size=200, vlm_name="dino", record=False):
     data_root = os.path.join(data_dir, f"gt_by_env/{env_id}/{split}_landmk.json")
     graph_root = os.path.join(data_dir, f"mem_graphs_pruned/{env_id}/{split}")
     graph_act_root = os.path.join(data_dir, f'mem_graphs/{env_id}.pkl')
@@ -332,13 +340,24 @@ def CityNavAgent(scene_id, split, data_dir="./data", max_step_size=200, vlm_name
     with open(data_root, 'r') as f:
         navi_tasks = json.load(f)['episodes']
 
+    # ====== 新增：白名单过滤 ======
+    if only_episode_ids is not None:
+        if isinstance(only_episode_ids, str):
+            only_episode_ids = {only_episode_ids}
+        else:
+            only_episode_ids = set(only_episode_ids)
+        navi_tasks = [e for e in navi_tasks if e.get('episode_id') in only_episode_ids]
+        print(f"[Filter] Only running episodes: {[e['episode_id'] for e in navi_tasks]}")
+        if not navi_tasks:
+            raise RuntimeError("No matching episodes found for only_episode_ids")
+
     nav_evaluator = CityNavEvaluator()
 
     # load LLM
     llm = OpenAI_LLM_v2(
         max_tokens=10000,
         model_name="gpt-4o",
-        api_key="your api key",
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
         client_type="openai",
         cache_name="navigation",
         finish_reasons=["stop", "length"],
@@ -480,8 +499,8 @@ def CityNavAgent(scene_id, split, data_dir="./data", max_step_size=200, vlm_name
 
                 rest_walks = action_traj[:rest_steps]
 
-                data_dict['pred_traj'].extend(rest_walks)
-                data_dict['pred_traj_memory'].extend(rest_walks)
+                data_dict['pred_traj'].extend([w[:3] for w in rest_walks])   # 只写入 x,y,z
+                data_dict['pred_traj_memory'].extend(rest_walks) 
 
                 stop_pos = rest_walks[-1][:3]
                 curr_pose = convert_airsim_pose(list(stop_pos) + list(curr_pose.orientation))
@@ -640,6 +659,8 @@ def replay_path(trajectory_files, scene_id, img_type='rgb'):
                 print(f"{e}, skip {episode_id}")
 
 
+
+
 def make_demo_video(data_root, env_id, episode_id):
     data_dir = f"{data_root}/{env_id}/{episode_id}/rgb"
     save_dir = f"{data_root}/{env_id}/{episode_id}"
@@ -679,10 +700,14 @@ def make_demo_video(data_root, env_id, episode_id):
 if __name__ == '__main__':
     env_id = 3
     split = "val_seen"
-    save_demo = False
+    save_demo = True
+
+    ONLY_EP = "3VELCLL3GTHB2UJSCD7IC4U05DK1F0"
 
     # 1. record path; 2. replay the path; 3. make demo video
-    CityNavAgent(env_id, split, max_step_size=60, vlm_name="sam", record=save_demo)
-    if save_demo:
-        replay_path(f"./output/output_data_{env_id}.json", env_id, img_type='rgb')
-        make_demo_video('./output/video', env_id=env_id, episode_id='3IRIK4HM3JIZ640FRHTYZU0EJ9Y6CH')
+    CityNavAgent(env_id, split, max_step_size=60, vlm_name="sam", record=save_demo, only_episode_ids=[ONLY_EP])
+    # CityNavAgent(env_id, split, max_step_size=60, vlm_name="sam", record=save_demo, only_episode_ids=None)
+    # if save_demo:
+    #     os.makedirs('output', exist_ok=True)
+    #     replay_path(f"./output/output_data_{env_id}.json", env_id, img_type='rgb')
+    #     make_demo_video('./output/video', env_id=env_id, episode_id='3VELCLL3GTHB2UJSCD7IC4U05DK1F0')

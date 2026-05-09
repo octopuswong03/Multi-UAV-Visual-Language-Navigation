@@ -10,7 +10,7 @@ import math
 import numpy as np
 
 from src.common.param import args
-from maps import compute_shortest_path
+from utils.maps import compute_shortest_path
 
 
 def to_eularian_angles(xyzw):
@@ -192,44 +192,70 @@ def non_maximum_suppression_1d(signal, window_size):
     return result
 
 
-def calculate_movement_steps(A, B, h_ss=5.0, v_ss=2.0, yaw_ss=15):
-    if isinstance(A, airsim.Pose):
-        # A, B are airsim pose
-        A_pos = np.array(list(A.position))
-        A_ori = airsim.to_eularian_angles(A.orientation)  # p, r, y
-    elif isinstance(A, list) or isinstance(A, np.ndarray):
-        A_pos = np.array(A[:3])
+# utils.py
+from collections.abc import Sequence
+import numpy as np
 
-        if len(A) == 6:
-            A_ori = np.array(A[3:6])
-        elif len(A) > 6:
-            A_ori = to_eularian_angles(A[3:7])
+def _infer_yaw_safe(from_pos: np.ndarray, to_pos: np.ndarray, fallback: float = 0.0) -> float:
+    delta = to_pos - from_pos
+    # 若水平位移几乎为 0，则用回退值，避免 arctan2/自定义 yaw 计算出 NaN
+    if np.allclose(delta[:2], 0.0, atol=1e-9):
+        return fallback
+    return compute_airsim_yaw(delta[0], delta[1])
+
+def calculate_movement_steps(A, B, h_ss=5.0, v_ss=2.0, yaw_ss=15):
+    # -------- 解析 A --------
+    if isinstance(A, airsim.Pose):
+        A_pos = np.array(list(A.position))
+        A_ori = airsim.to_eularian_angles(A.orientation)  # (pitch, roll, yaw)
+    elif isinstance(A, Sequence) and not isinstance(A, (str, bytes)):
+        A = list(A)
+        A_pos = np.array(A[:3])
+        A_ori = None
+        if len(A) >= 7:
+            A_ori = to_eularian_angles(A[3:7])        # quat -> (p, r, y)
+        elif len(A) == 6:
+            A_ori = np.array(A[3:6])                  # already (p, r, y)
+        elif len(A) == 3:
+            A_ori = None                               # 稍后用 A->B 推断 yaw
         else:
             raise ValueError(f"invalid orientation: {A}")
     else:
         raise ValueError(f"invalid pose format: {A}")
 
+    # -------- 解析 B --------
     if isinstance(B, airsim.Pose):
-        # A, B are airsim pose
         B_pos = np.array(list(B.position))
-        B_ori = airsim.to_eularian_angles(B.orientation)  # p, r, y
-    elif isinstance(B, list) or isinstance(B, np.ndarray):
+        B_ori = airsim.to_eularian_angles(B.orientation)
+    elif isinstance(B, Sequence) and not isinstance(B, (str, bytes)):
+        B = list(B)
         B_pos = np.array(B[:3])
-
-        if len(B) == 6:
-            B_ori = np.array(B[3:])
-        elif len(B) > 6:
+        if len(B) >= 7:
             B_ori = to_eularian_angles(B[3:7])
+        elif len(B) == 6:
+            B_ori = np.array(B[3:6])
         elif len(B) == 3:
-            del_pos = B_pos - A_pos
-            B_yaw = compute_airsim_yaw(del_pos[0], del_pos[1])
-            B_ori = [0, 0, B_yaw]
+            # 用 A->B 推断 B 的 yaw；如果水平位移为 0，则用 A 的 yaw 或 0.0 回退
+            fallback_yaw = 0.0 if (A_ori is None) else float(A_ori[-1])
+            B_yaw = _infer_yaw_safe(B_pos, B_pos + (B_pos - A_pos), fallback=fallback_yaw)
+            B_ori = [0.0, 0.0, B_yaw]
         else:
             raise ValueError(f"invalid orientation: {B}")
     else:
         raise ValueError(f"invalid pose format: {B}")
 
+    # 若 A 没有朝向，则从 A->B 推断；若水平位移为 0，用 B 的 yaw/0.0 回退
+    if A_ori is None:
+        fallback_yaw = float(B_ori[-1]) if B_ori is not None else 0.0
+        A_yaw = _infer_yaw_safe(A_pos, B_pos, fallback=fallback_yaw)
+        A_ori = np.array([0.0, 0.0, A_yaw])
+
+    # 余下逻辑（旋转-平移分解、插值与拼接）保持不变……
+    # （从你现有文件继续）
+
+
     delta_yaw = B_ori[-1] - A_ori[-1]
+
     abs_delta_yaw = np.abs(delta_yaw)
     rot_angle = abs_delta_yaw if abs_delta_yaw < np.pi else 2*np.pi-abs_delta_yaw
     rot_reverse = 1 if abs_delta_yaw < np.pi else -1
@@ -281,7 +307,10 @@ def calculate_movement_steps_mem(mem_g, mem_traj, h_ss=5.0, v_ss=2.0, y_ss=15):
     step_size = 0.0
     action_traj = []
     for ii in range(1, len(mem_traj)):
-        mid_path, mid_nodes = compute_shortest_path(mem_g, mem_traj[ii - 1], mem_traj[ii])
+        pos_A = mem_traj[ii - 1][:3]   # 只取 x,y,z
+        pos_B = mem_traj[ii][:3]
+        mid_path, mid_nodes = compute_shortest_path(mem_g, pos_A, pos_B)
+
         for jj in range(1, len(mid_path)):
             start_coord = mid_path[jj-1][:3]
             tar_coord = mid_path[jj][:3]

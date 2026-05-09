@@ -27,10 +27,14 @@ class Param:
         self.parser.add_argument('--batchSize', type=int, default=8)
         self.parser.add_argument("--trainer_gpu_device", type=int, default=0, help='GPU')
 
-        self.parser.add_argument('--Image_Height_RGB', type=int, default=224)
-        self.parser.add_argument('--Image_Width_RGB', type=int, default=224)
-        self.parser.add_argument('--Image_Height_DEPTH', type=int, default=256)
-        self.parser.add_argument('--Image_Width_DEPTH', type=int, default=256)
+        # self.parser.add_argument('--Image_Height_RGB', type=int, default=224)
+        # self.parser.add_argument('--Image_Width_RGB', type=int, default=224)
+        # self.parser.add_argument('--Image_Height_DEPTH', type=int, default=256)
+        # self.parser.add_argument('--Image_Width_DEPTH', type=int, default=256) 
+        self.parser.add_argument('--Image_Height_RGB', type=int, default=512)
+        self.parser.add_argument('--Image_Width_RGB', type=int, default=512)
+        self.parser.add_argument('--Image_Height_DEPTH', type=int, default=512)
+        self.parser.add_argument('--Image_Width_DEPTH', type=int, default=512) 
 
         self.parser.add_argument('--inflection_weight_coef', type=float, default=1.9)
 
